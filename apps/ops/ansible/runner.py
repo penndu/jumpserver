@@ -1,6 +1,8 @@
 # ~*~ coding: utf-8 ~*~
 
 import os
+import errno
+import sys
 import shutil
 from collections import namedtuple
 
@@ -12,6 +14,9 @@ from ansible.parsing.dataloader import DataLoader
 from ansible.executor.playbook_executor import PlaybookExecutor
 from ansible.playbook.play import Play
 import ansible.constants as C
+from ansible.utils.display import Display
+from ansible.utils.color import stringc
+from ansible.utils.singleton import Singleton
 
 from .callback import (
     AdHocResultCallback, PlaybookResultCallBack, CommandResultCallback
@@ -53,6 +58,58 @@ def get_default_options():
         remote_tmp='/tmp/.ansible'
     )
     return options
+
+
+class UnSingleton(Singleton):
+    def __init__(cls, name, bases, dct):
+        type.__init__(cls, name, bases, dct)
+
+    def __call__(cls, *args, **kwargs):
+        return type.__call__(cls, *args, **kwargs)
+
+
+class AdHocDisplay(Display, metaclass=UnSingleton):
+    def __init__(self, adhoc_execution_id, verbosity=0):
+        super().__init__(verbosity=verbosity)
+        from ops.celery.utils import get_celery_task_log_path
+        self.log_path = get_celery_task_log_path(adhoc_execution_id)
+
+    def set_cowsay_info(self):
+        # 中断 cowsay 的测试，会频繁开启子进程
+        return
+
+    def _write_to_screen(self, msg, stderr):
+        if not stderr:
+            screen = sys.stdout
+        else:
+            screen = sys.stderr
+
+        screen.write(msg)
+
+        try:
+            screen.flush()
+        except IOError as e:
+            # Ignore EPIPE in case fileobj has been prematurely closed, eg.
+            # when piping to "head -n1"
+            if e.errno != errno.EPIPE:
+                raise
+
+    def _write_to_log_file(self, msg):
+        # 注意！！！任务很多时，这里会频繁的打开关闭文件
+        with open(self.log_path, mode='a') as f:
+            f.write(msg)
+
+    def display(self, msg, color=None, stderr=False, screen_only=False, log_only=False):
+        if color:
+            msg = stringc(msg, color)
+
+        if not msg.endswith(u'\n'):
+            msg2 = msg + u'\n'
+        else:
+            msg2 = msg
+
+        self._write_to_screen(msg2, stderr)
+        self._write_to_log_file(msg2)
 
 
 # JumpServer not use playbook
@@ -130,8 +187,8 @@ class AdHocRunner:
             loader=self.loader, inventory=self.inventory
         )
 
-    def get_result_callback(self, file_obj=None):
-        return self.__class__.results_callback_class()
+    def get_result_callback(self, adhoc_execution_id=None):
+        return self.__class__.results_callback_class(display=AdHocDisplay(adhoc_execution_id))
 
     @staticmethod
     def check_module_args(module_name, module_args=''):
@@ -189,7 +246,7 @@ class AdHocRunner:
                 'ssh_args': '-C -o ControlMaster=no'
             }
 
-    def run(self, tasks, pattern, play_name='Ansible Ad-hoc', gather_facts='no'):
+    def run(self, tasks, pattern, play_name='Ansible Ad-hoc', gather_facts='no', adhoc_execution_id=None):
         """
         :param tasks: [{'action': {'module': 'shell', 'args': 'ls'}, ...}, ]
         :param pattern: all, *, or others
@@ -198,7 +255,7 @@ class AdHocRunner:
         :return:
         """
         self.check_pattern(pattern)
-        self.results_callback = self.get_result_callback()
+        self.results_callback = self.get_result_callback(adhoc_execution_id)
         cleaned_tasks = self.clean_tasks(tasks)
         self.set_control_master_if_need(cleaned_tasks)
         context.CLIARGS = ImmutableDict(self.options)
