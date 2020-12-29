@@ -178,14 +178,8 @@ class AdHoc(OrgModelMixin):
         return ""
 
     def run(self):
-        try:
-            hid = current_task.request.id
-            if AdHocExecution.objects.filter(id=hid).exists():
-                hid = uuid.uuid4()
-        except AttributeError:
-            hid = uuid.uuid4()
         execution = AdHocExecution(
-            id=hid, adhoc=self, task=self.task,
+            adhoc=self, task=self.task,
             task_display=str(self.task)[:128],
             date_start=timezone.now(),
             hosts_amount=self.hosts.count(),
@@ -270,6 +264,7 @@ class AdHocExecution(OrgModelMixin):
                 self.adhoc.tasks,
                 self.adhoc.pattern,
                 self.task.name,
+                adhoc_execution_id=self.id
             )
             return result.results_raw, result.results_summary
         except AnsibleError as e:
