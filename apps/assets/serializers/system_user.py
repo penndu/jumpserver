@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.utils.translation import ugettext_lazy as _
 from django.db.models import Count
 
-from common.serializers import AdaptedBulkListSerializer
+from common.drf.serializers import AdaptedBulkListSerializer
 from common.mixins.serializers import BulkSerializerMixin
 from common.utils import ssh_pubkey_gen
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
@@ -14,6 +14,7 @@ __all__ = [
     'SystemUserSimpleSerializer', 'SystemUserAssetRelationSerializer',
     'SystemUserNodeRelationSerializer', 'SystemUserTaskSerializer',
     'SystemUserUserRelationSerializer', 'SystemUserWithAuthInfoSerializer',
+    'SystemUserTempAuthSerializer',
 ]
 
 
@@ -26,16 +27,18 @@ class SystemUserSerializer(AuthSerializerMixin, BulkOrgResourceModelSerializer):
     class Meta:
         model = SystemUser
         list_serializer_class = AdaptedBulkListSerializer
-        fields = [
-            'id', 'name', 'username', 'protocol',
-            'password', 'public_key', 'private_key',
-            'login_mode', 'login_mode_display',
-            'priority', 'username_same_with_user',
-            'auto_push', 'cmd_filters', 'sudo', 'shell', 'comment',
-            'auto_generate_key', 'sftp_root', 'token',
-            'assets_amount', 'date_created', 'created_by',
-            'home', 'system_groups', 'ad_domain'
+        fields_mini = ['id', 'name', 'username']
+        fields_write_only = ['password', 'public_key', 'private_key']
+        fields_small = fields_mini + fields_write_only + [
+            'protocol', 'login_mode', 'login_mode_display', 'priority',
+            'sudo', 'shell', 'sftp_root', 'token',
+            'home', 'system_groups', 'ad_domain',
+            'username_same_with_user', 'auto_push', 'auto_generate_key',
+            'date_created', 'date_updated',
+            'comment', 'created_by',
         ]
+        fields_m2m = [ 'cmd_filters', 'assets_amount']
+        fields = fields_small + fields_m2m
         extra_kwargs = {
             'password': {"write_only": True},
             'public_key': {"write_only": True},
@@ -101,6 +104,12 @@ class SystemUserSerializer(AuthSerializerMixin, BulkOrgResourceModelSerializer):
             raise serializers.ValidationError(msg)
         return username
 
+    def validate_home(self, home):
+        username_same_with_user = self.initial_data.get("username_same_with_user")
+        if username_same_with_user:
+            return ''
+        return home
+
     def validate_sftp_root(self, value):
         if value in ['home', 'tmp']:
             return value
@@ -147,16 +156,18 @@ class SystemUserSerializer(AuthSerializerMixin, BulkOrgResourceModelSerializer):
 class SystemUserListSerializer(SystemUserSerializer):
 
     class Meta(SystemUserSerializer.Meta):
-        fields = [
-            'id', 'name', 'username', 'protocol',
-            'password', 'public_key', 'private_key',
-            'login_mode', 'login_mode_display',
-            'priority', "username_same_with_user",
-            'auto_push', 'sudo', 'shell', 'comment',
-            "assets_amount", 'home', 'system_groups',
-            'auto_generate_key', 'ad_domain',
-            'sftp_root',
+        fields_mini = ['id', 'name', 'username']
+        fields_write_only = ['password', 'public_key', 'private_key']
+        fields_small = fields_mini + fields_write_only + [
+            'protocol', 'login_mode', 'login_mode_display', 'priority',
+            'sudo', 'shell', 'home', 'system_groups',
+            'ad_domain', 'sftp_root',
+            "username_same_with_user", 'auto_push', 'auto_generate_key',
+            'date_created', 'date_updated',
+            'comment', 'created_by',
         ]
+        fields_m2m = ["assets_amount",]
+        fields = fields_small + fields_m2m
         extra_kwargs = {
             'password': {"write_only": True},
             'public_key': {"write_only": True},
@@ -177,15 +188,15 @@ class SystemUserListSerializer(SystemUserSerializer):
 
 class SystemUserWithAuthInfoSerializer(SystemUserSerializer):
     class Meta(SystemUserSerializer.Meta):
-        fields = [
-            'id', 'name', 'username', 'protocol',
-            'password', 'public_key', 'private_key',
-            'login_mode', 'login_mode_display',
-            'priority', 'username_same_with_user',
-            'auto_push', 'sudo', 'shell', 'comment',
-            'auto_generate_key', 'sftp_root', 'token',
-            'ad_domain',
+        fields_mini = ['id', 'name', 'username']
+        fields_write_only = ['password', 'public_key', 'private_key']
+        fields_small = fields_mini + fields_write_only + [
+            'protocol', 'login_mode', 'login_mode_display', 'priority',
+            'sudo', 'shell', 'ad_domain', 'sftp_root', 'token',
+            "username_same_with_user", 'auto_push', 'auto_generate_key',
+            'comment',
         ]
+        fields = fields_small
         extra_kwargs = {
             'nodes_amount': {'label': _('Node')},
             'assets_amount': {'label': _('Asset')},
@@ -262,3 +273,10 @@ class SystemUserTaskSerializer(serializers.Serializer):
         many=True
     )
     task = serializers.CharField(read_only=True)
+
+
+class SystemUserTempAuthSerializer(SystemUserSerializer):
+    instance_id = serializers.CharField()
+
+    class Meta(SystemUserSerializer.Meta):
+        fields = ['instance_id', 'username', 'password']

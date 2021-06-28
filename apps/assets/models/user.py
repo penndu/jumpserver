@@ -7,9 +7,10 @@ import logging
 from django.db import models
 from django.utils.translation import ugettext_lazy as _
 from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.cache import cache
 
-from common.utils import signer
-from common.fields.model import JsonListCharField
+from common.utils import signer, get_object_or_none
+from common.exceptions import JMSException
 from .base import BaseUser
 from .asset import Asset
 
@@ -88,6 +89,26 @@ class SystemUser(BaseUser):
         (PROTOCOL_K8S, 'k8s'),
     )
 
+    SUPPORT_PUSH_PROTOCOLS = [PROTOCOL_SSH, PROTOCOL_RDP]
+
+    ASSET_CATEGORY_PROTOCOLS = [
+        PROTOCOL_SSH, PROTOCOL_RDP, PROTOCOL_TELNET, PROTOCOL_VNC
+    ]
+    APPLICATION_CATEGORY_REMOTE_APP_PROTOCOLS = [
+        PROTOCOL_RDP
+    ]
+    APPLICATION_CATEGORY_DB_PROTOCOLS = [
+        PROTOCOL_MYSQL, PROTOCOL_ORACLE, PROTOCOL_MARIADB, PROTOCOL_POSTGRESQL
+    ]
+    APPLICATION_CATEGORY_CLOUD_PROTOCOLS = [
+        PROTOCOL_K8S
+    ]
+    APPLICATION_CATEGORY_PROTOCOLS = [
+        *APPLICATION_CATEGORY_REMOTE_APP_PROTOCOLS,
+        *APPLICATION_CATEGORY_DB_PROTOCOLS,
+        *APPLICATION_CATEGORY_CLOUD_PROTOCOLS
+    ]
+
     LOGIN_AUTO = 'auto'
     LOGIN_MANUAL = 'manual'
     LOGIN_MODE_CHOICES = (
@@ -99,7 +120,7 @@ class SystemUser(BaseUser):
     assets = models.ManyToManyField('assets.Asset', blank=True, verbose_name=_("Assets"))
     users = models.ManyToManyField('users.User', blank=True, verbose_name=_("Users"))
     groups = models.ManyToManyField('users.UserGroup', blank=True, verbose_name=_("User groups"))
-    priority = models.IntegerField(default=20, verbose_name=_("Priority"), validators=[MinValueValidator(1), MaxValueValidator(100)])
+    priority = models.IntegerField(default=81, verbose_name=_("Priority"), help_text=_("1-100, the lower the value will be match first"), validators=[MinValueValidator(1), MaxValueValidator(100)])
     protocol = models.CharField(max_length=16, choices=PROTOCOL_CHOICES, default='ssh', verbose_name=_('Protocol'))
     auto_push = models.BooleanField(default=True, verbose_name=_('Auto push'))
     sudo = models.TextField(default='/bin/whoami', verbose_name=_('Sudo'))
@@ -133,29 +154,15 @@ class SystemUser(BaseUser):
     def login_mode_display(self):
         return self.get_login_mode_display()
 
-    @property
-    def db_application_protocols(self):
-        return [
-            self.PROTOCOL_MYSQL, self.PROTOCOL_ORACLE, self.PROTOCOL_MARIADB,
-            self.PROTOCOL_POSTGRESQL
-        ]
-
-    @property
-    def cloud_application_protocols(self):
-        return [self.PROTOCOL_K8S]
-
-    @property
-    def application_category_protocols(self):
-        protocols = []
-        protocols.extend(self.db_application_protocols)
-        protocols.extend(self.cloud_application_protocols)
-        return protocols
-
     def is_need_push(self):
-        if self.auto_push and self.protocol in [self.PROTOCOL_SSH, self.PROTOCOL_RDP]:
+        if self.auto_push and self.is_protocol_support_push:
             return True
         else:
             return False
+
+    @property
+    def is_protocol_support_push(self):
+        return self.protocol in self.SUPPORT_PUSH_PROTOCOLS
 
     @property
     def is_need_cmd_filter(self):
@@ -163,7 +170,7 @@ class SystemUser(BaseUser):
 
     @property
     def is_need_test_asset_connective(self):
-        return self.protocol not in self.application_category_protocols
+        return self.protocol in self.ASSET_CATEGORY_PROTOCOLS
 
     def has_special_auth(self, asset=None, username=None):
         if username is None and self.username_same_with_user:
@@ -172,12 +179,87 @@ class SystemUser(BaseUser):
 
     @property
     def can_perm_to_asset(self):
-        return self.protocol not in self.application_category_protocols
+        return self.protocol in self.ASSET_CATEGORY_PROTOCOLS
 
     def _merge_auth(self, other):
         super()._merge_auth(other)
         if self.username_same_with_user:
             self.username = other.username
+
+    def set_temp_auth(self, asset_or_app_id, user_id, auth, ttl=300):
+        if not auth:
+            raise ValueError('Auth not set')
+        key = 'TEMP_PASSWORD_{}_{}_{}'.format(self.id, asset_or_app_id, user_id)
+        logger.debug(f'Set system user temp auth: {key}')
+        cache.set(key, auth, ttl)
+
+    def get_temp_auth(self, asset_or_app_id, user_id):
+        key = 'TEMP_PASSWORD_{}_{}_{}'.format(self.id, asset_or_app_id, user_id)
+        logger.debug(f'Get system user temp auth: {key}')
+        password = cache.get(key)
+        return password
+
+    def load_tmp_auth_if_has(self, asset_or_app_id, user):
+        if not asset_or_app_id or not user:
+            return
+        if self.login_mode != self.LOGIN_MANUAL:
+            pass
+
+        auth = self.get_temp_auth(asset_or_app_id, user)
+        if not auth:
+            return
+        username = auth.get('username')
+        password = auth.get('password')
+
+        if username:
+            self.username = username
+        if password:
+            self.password = password
+
+    def load_app_more_auth(self, app_id=None, user_id=None):
+        from users.models import User
+
+        if self.login_mode == self.LOGIN_MANUAL:
+            self.password = ''
+            self.private_key = ''
+        if not user_id:
+            return
+        user = get_object_or_none(User, pk=user_id)
+        if not user:
+            return
+        self.load_tmp_auth_if_has(app_id, user)
+
+    def load_asset_more_auth(self, asset_id=None, username=None, user_id=None):
+        from users.models import User
+
+        if self.login_mode == self.LOGIN_MANUAL:
+            self.password = ''
+            self.private_key = ''
+
+        asset = None
+        if asset_id:
+            asset = get_object_or_none(Asset, pk=asset_id)
+        # 没有资产就没有必要继续了
+        if not asset:
+            logger.debug('Asset not found, pass')
+            return
+
+        user = None
+        if user_id:
+            user = get_object_or_none(User, pk=user_id)
+
+        if self.username_same_with_user:
+            if user and not username:
+                username = user.username
+
+        # 加载某个资产的特殊配置认证信息
+        try:
+            self.load_asset_special_auth(asset, username)
+        except Exception as e:
+            logger.error('Load special auth Error: ', e)
+            pass
+
+        self.load_tmp_auth_if_has(asset_id, user)
 
     @property
     def cmd_filter_rules(self):
@@ -190,20 +272,31 @@ class SystemUser(BaseUser):
     def is_command_can_run(self, command):
         for rule in self.cmd_filter_rules:
             action, matched_cmd = rule.match(command)
-            if action == rule.ACTION_ALLOW:
+            if action == rule.ActionChoices.allow:
                 return True, None
-            elif action == rule.ACTION_DENY:
+            elif action == rule.ActionChoices.deny:
                 return False, matched_cmd
         return True, None
 
     def get_all_assets(self):
         from assets.models import Node
         nodes_keys = self.nodes.all().values_list('key', flat=True)
-        assets_ids = set(self.assets.all().values_list('id', flat=True))
-        nodes_assets_ids = Node.get_nodes_all_assets_ids(nodes_keys)
-        assets_ids.update(nodes_assets_ids)
-        assets = Asset.objects.filter(id__in=assets_ids)
+        asset_ids = set(self.assets.all().values_list('id', flat=True))
+        nodes_asset_ids = Node.get_nodes_all_asset_ids_by_keys(nodes_keys)
+        asset_ids.update(nodes_asset_ids)
+        assets = Asset.objects.filter(id__in=asset_ids)
         return assets
+
+    @classmethod
+    def get_protocol_by_application_type(cls, app_type):
+        from applications.const import ApplicationTypeChoices
+        if app_type in cls.APPLICATION_CATEGORY_PROTOCOLS:
+            protocol = app_type
+        elif app_type in ApplicationTypeChoices.remote_app_types():
+            protocol = cls.PROTOCOL_RDP
+        else:
+            protocol = None
+        return protocol
 
     class Meta:
         ordering = ['name']

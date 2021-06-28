@@ -3,8 +3,6 @@
 from django.utils.translation import ugettext_lazy as _
 from rest_framework import serializers
 
-from common.serializers import AdaptedBulkListSerializer
-
 from ..models import Node, AdminUser
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
 
@@ -17,20 +15,29 @@ class AdminUserSerializer(AuthSerializerMixin, BulkOrgResourceModelSerializer):
     """
 
     class Meta:
-        list_serializer_class = AdaptedBulkListSerializer
         model = AdminUser
-        fields = [
-            'id', 'name', 'username', 'password', 'private_key', 'public_key',
-            'comment', 'assets_amount', 'date_created', 'date_updated', 'created_by',
+        fields_mini  = ['id', 'name', 'username']
+        fields_write_only = ['password', 'private_key', 'public_key']
+        fields_small = fields_mini + fields_write_only + [
+            'date_created', 'date_updated',
+            'comment', 'created_by'
         ]
+        fields_fk = ['assets_amount']
+        fields = fields_small + fields_fk
         read_only_fields = ['date_created', 'date_updated', 'created_by', 'assets_amount']
 
         extra_kwargs = {
+            'username': {"required": True},
             'password': {"write_only": True},
             'private_key': {"write_only": True},
             'public_key': {"write_only": True},
             'assets_amount': {'label': _('Asset')},
         }
+
+
+class AdminUserDetailSerializer(AdminUserSerializer):
+    class Meta(AdminUserSerializer.Meta):
+        fields = AdminUserSerializer.Meta.fields + ['ssh_key_fingerprint']
 
 
 class AdminUserAuthSerializer(AuthSerializer):

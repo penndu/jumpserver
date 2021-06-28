@@ -31,16 +31,16 @@ class BaseBackend:
     def qs_to_values(qs):
         values = qs.values(
             'hostname', 'ip', "asset_id",
-            'username', 'password', 'private_key', 'public_key',
+            'name', 'username', 'password', 'private_key', 'public_key',
             'score', 'version',
             "asset_username", "union_id",
             'date_created', 'date_updated',
-            'org_id', 'backend',
+            'org_id', 'backend', 'backend_display'
         )
         return values
 
     @staticmethod
-    def make_assets_as_id(assets):
+    def make_assets_as_ids(assets):
         if not assets:
             return []
         if isinstance(assets[0], Asset):

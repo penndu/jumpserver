@@ -4,55 +4,62 @@ from urllib.parse import urljoin
 from django.conf import settings
 from django.utils.translation import ugettext as _
 
-from common.const.front_urls import TICKET_DETAIL
 from common.utils import get_logger
 from common.tasks import send_mail_async
+from . import const
 
-logger = get_logger(__name__)
-from tickets.models import Ticket
+logger = get_logger(__file__)
 
-
-def send_new_ticket_mail_to_assignees(ticket: Ticket, assignees):
-    recipient_list = [user.email for user in assignees]
-    user = ticket.user
-    if not recipient_list:
-        logger.error("Ticket not has assignees: {}".format(ticket.id))
-        return
-    subject = '{}: {}'.format(_("New ticket"), ticket.title)
-
-    # 这里要设置前端地址，因为要直接跳转到页面
-    detail_url = urljoin(settings.SITE_URL, TICKET_DETAIL.format(id=ticket.id))
-    message = _("""
+EMAIL_TEMPLATE = '''
+    <div>
+        <p>
+            {title} 
+            <a href={ticket_detail_url}>
+                <strong>{ticket_detail_url_description}</strong>
+            </a>
+        </p>
         <div>
-            <p>Your has a new ticket</p>
-            <div>
-                {body}
-                <br/>
-                <a href={url}>click here to review</a> 
-            </div>
+            {body}
         </div>
-    """).format(body=ticket.body, user=user, url=detail_url)
+    </div>
+'''
+
+
+def send_ticket_applied_mail_to_assignees(ticket):
+    if not ticket.assignees:
+        logger.debug("Not found assignees, ticket: {}({}), assignees: {}".format(
+            ticket, str(ticket.id), ticket.assignees)
+        )
+        return
+
+    ticket_detail_url = urljoin(settings.SITE_URL, const.TICKET_DETAIL_URL.format(id=str(ticket.id)))
+    subject = _('New Ticket - {} ({})').format(ticket.title, ticket.get_type_display())
+    message = EMAIL_TEMPLATE.format(
+        title=_('Your has a new ticket, applicant - {}').format(str(ticket.applicant_display)),
+        ticket_detail_url=ticket_detail_url,
+        ticket_detail_url_description=_('click here to review'),
+        body=ticket.body.replace('\n', '<br/>'),
+    )
+    if settings.DEBUG:
+        logger.debug(message)
+    recipient_list = [assignee.email for assignee in ticket.assignees.all()]
     send_mail_async.delay(subject, message, recipient_list, html_message=message)
 
 
-def send_ticket_action_mail_to_user(ticket):
-    if not ticket.user:
-        logger.error("Ticket not has user: {}".format(ticket.id))
+def send_ticket_processed_mail_to_applicant(ticket):
+    if not ticket.applicant:
+        logger.error("Not found applicant: {}({})".format(ticket.title, ticket.id))
         return
-    user = ticket.user
-    recipient_list = [user.email]
-    subject = '{}: {}'.format(_("Ticket has been reply"), ticket.title)
-    message = _("""
-        <div>
-            <p>Your ticket has been replay</p>
-            <div>
-                <b>Title:</b> {ticket.title}
-                <br/>
-                <b>Assignee:</b> {ticket.assignee_display}
-                <br/>
-                <b>Status:</b> {ticket.status_display}
-                <br/>
-            </div>
-        </div>
-     """).format(ticket=ticket)
+
+    ticket_detail_url = urljoin(settings.SITE_URL, const.TICKET_DETAIL_URL.format(id=str(ticket.id)))
+    subject = _('Ticket has processed - {} ({})').format(ticket.title, ticket.processor_display)
+    message = EMAIL_TEMPLATE.format(
+        title=_('Your ticket has been processed, processor - {}').format(ticket.processor_display),
+        ticket_detail_url=ticket_detail_url,
+        ticket_detail_url_description=_('click here to review'),
+        body=ticket.body.replace('\n', '<br/>'),
+    )
+    if settings.DEBUG:
+        logger.debug(message)
+    recipient_list = [ticket.applicant.email]
     send_mail_async.delay(subject, message, recipient_list, html_message=message)

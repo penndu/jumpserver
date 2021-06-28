@@ -7,7 +7,7 @@ from rest_framework.views import Response
 
 from common.drf.api import JMSBulkModelViewSet
 from common.permissions import IsOrgAdmin
-from common.serializers import CeleryTaskSerializer
+from common.drf.serializers import CeleryTaskSerializer
 from ..models import Task, AdHoc, AdHocExecution
 from ..serializers import (
     TaskSerializer,
@@ -17,16 +17,18 @@ from ..serializers import (
     AdHocDetailSerializer,
 )
 from ..tasks import run_ansible_task
+from orgs.mixins.api import OrgBulkModelViewSet
+from orgs.utils import current_org
 
 __all__ = [
     'TaskViewSet', 'TaskRun', 'AdHocViewSet', 'AdHocRunHistoryViewSet'
 ]
 
 
-class TaskViewSet(JMSBulkModelViewSet):
-    queryset = Task.objects.all()
-    filter_fields = ("name",)
-    search_fields = filter_fields
+class TaskViewSet(OrgBulkModelViewSet):
+    model = Task
+    filterset_fields = ("name",)
+    search_fields = filterset_fields
     serializer_class = TaskSerializer
     permission_classes = (IsOrgAdmin,)
 

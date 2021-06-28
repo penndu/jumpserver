@@ -143,6 +143,7 @@ class Config(dict):
         'REDIS_DB_SESSION': 5,
         'REDIS_DB_WS': 6,
 
+        'GLOBAL_ORG_DISPLAY_NAME': '',
         'SITE_URL': 'http://localhost:8080',
         'CAPTCHA_TEST_MODE': None,
         'TOKEN_EXPIRATION': 3600 * 24,
@@ -215,6 +216,16 @@ class Config(dict):
         'AUTH_SSO': False,
         'AUTH_SSO_AUTHKEY_TTL': 60 * 15,
 
+        'AUTH_WECOM': False,
+        'WECOM_CORPID': '',
+        'WECOM_AGENTID': '',
+        'WECOM_SECRET': '',
+
+        'AUTH_DINGTALK': False,
+        'DINGTALK_AGENTID': '',
+        'DINGTALK_APPKEY': '',
+        'DINGTALK_APPSECRET': '',
+
         'OTP_VALID_WINDOW': 2,
         'OTP_ISSUER_NAME': 'JumpServer',
         'EMAIL_SUFFIX': 'jumpserver.org',
@@ -248,6 +259,7 @@ class Config(dict):
         'SECURITY_INSECURE_COMMAND': False,
         'SECURITY_INSECURE_COMMAND_LEVEL': 5,
         'SECURITY_INSECURE_COMMAND_EMAIL_RECEIVER': '',
+        'SECURITY_LUNA_REMEMBER_AUTH': True,
 
         'HTTP_BIND_HOST': '0.0.0.0',
         'HTTP_LISTEN_PORT': 8080,
@@ -258,6 +270,7 @@ class Config(dict):
         'FTP_LOG_KEEP_DAYS': 200,
         'ASSETS_PERM_CACHE_TIME': 3600 * 24,
         'SECURITY_MFA_VERIFY_TTL': 3600,
+        'OLD_PASSWORD_HISTORY_LIMIT_COUNT': 5,
         'ASSETS_PERM_CACHE_ENABLE': HAS_XPACK,
         'SYSLOG_ADDR': '',  # '192.168.0.1:514'
         'SYSLOG_FACILITY': 'user',
@@ -267,7 +280,7 @@ class Config(dict):
         'WINDOWS_SSH_DEFAULT_SHELL': 'cmd',
         'FLOWER_URL': "127.0.0.1:5555",
         'DEFAULT_ORG_SHOW_ALL_USERS': True,
-        'PERIOD_TASK_ENABLE': True,
+        'PERIOD_TASK_ENABLED': True,
         'FORCE_SCRIPT_NAME': '',
         'LOGIN_CONFIRM_ENABLE': False,
         'WINDOWS_SKIP_ALL_MANUAL_PASSWORD': False,
@@ -280,7 +293,17 @@ class Config(dict):
         'SESSION_COOKIE_SECURE': False,
         'CSRF_COOKIE_SECURE': False,
         'REFERER_CHECK_ENABLED': False,
-        'SERVER_REPLAY_STORAGE': {}
+        'SERVER_REPLAY_STORAGE': {},
+        'CONNECTION_TOKEN_ENABLED': False,
+        'ONLY_ALLOW_EXIST_USER_AUTH': False,
+        'ONLY_ALLOW_AUTH_FROM_SOURCE': False,
+        'DISK_CHECK_ENABLED': True,
+        'SESSION_SAVE_EVERY_REQUEST': True,
+        'SESSION_EXPIRE_AT_BROWSER_CLOSE_FORCE': False,
+        'FORGOT_PASSWORD_URL': '',
+        'HEALTH_CHECK_TOKEN': '',
+
+        'TERMINAL_RDP_ADDR': ''
     }
 
     def compatible_auth_openid_of_key(self):
@@ -424,101 +447,6 @@ class Config(dict):
 
     def __getattr__(self, item):
         return self.get(item)
-
-
-class DynamicConfig:
-    def __init__(self, static_config):
-        self.static_config = static_config
-        self.db_setting = None
-
-    def __getitem__(self, item):
-        return self.dynamic(item)
-
-    def __getattr__(self, item):
-        return self.dynamic(item)
-
-    def dynamic(self, item):
-        return lambda: self.get(item)
-
-    def LOGIN_URL(self):
-        return self.get('LOGIN_URL')
-
-    def AUTHENTICATION_BACKENDS(self):
-        backends = [
-            'authentication.backends.pubkey.PublicKeyAuthBackend',
-            'django.contrib.auth.backends.ModelBackend',
-        ]
-        if self.get('AUTH_LDAP'):
-            backends.insert(0, 'authentication.backends.ldap.LDAPAuthorizationBackend')
-        if self.static_config.get('AUTH_CAS'):
-            backends.insert(0, 'authentication.backends.cas.CASBackend')
-        if self.static_config.get('AUTH_OPENID'):
-            backends.insert(0, 'jms_oidc_rp.backends.OIDCAuthPasswordBackend')
-            backends.insert(0, 'jms_oidc_rp.backends.OIDCAuthCodeBackend')
-        if self.static_config.get('AUTH_RADIUS'):
-            backends.insert(0, 'authentication.backends.radius.RadiusBackend')
-        if self.static_config.get('AUTH_SSO'):
-            backends.insert(0, 'authentication.backends.api.SSOAuthentication')
-        return backends
-
-    def AUTH_DB(self):
-        return len(self.AUTHENTICATION_BACKENDS()) == 2
-
-    def XPACK_LICENSE_IS_VALID(self):
-        if not HAS_XPACK:
-            return False
-        try:
-            from xpack.plugins.license.models import License
-            return License.has_valid_license()
-        except:
-            return False
-
-    def XPACK_INTERFACE_LOGIN_TITLE(self):
-        default_title = _('Welcome to the JumpServer open source fortress')
-        if not HAS_XPACK:
-            return default_title
-        try:
-            from xpack.plugins.interface.models import Interface
-            return Interface.get_login_title()
-        except:
-            return default_title
-
-    def LOGO_URLS(self):
-        logo_urls = {'logo_logout': static('img/logo.png'),
-                     'logo_index': static('img/logo_text.png'),
-                     'login_image': static('img/login_image.png'),
-                     'favicon': static('img/facio.ico')}
-        if not HAS_XPACK:
-            return logo_urls
-        try:
-            from xpack.plugins.interface.models import Interface
-            obj = Interface.interface()
-            if obj:
-                if obj.logo_logout:
-                    logo_urls.update({'logo_logout': obj.logo_logout.url})
-                if obj.logo_index:
-                    logo_urls.update({'logo_index': obj.logo_index.url})
-                if obj.login_image:
-                    logo_urls.update({'login_image': obj.login_image.url})
-                if obj.favicon:
-                    logo_urls.update({'favicon': obj.favicon.url})
-        except:
-            pass
-        return logo_urls
-
-    def get_from_db(self, item):
-        if self.db_setting is not None:
-            value = self.db_setting.get(item)
-            if value is not None:
-                return value
-        return None
-
-    def get(self, item):
-        # 先从数据库中获取
-        value = self.get_from_db(item)
-        if value is not None:
-            return value
-        return self.static_config.get(item)
 
 
 class ConfigManager:
@@ -697,7 +625,3 @@ class ConfigManager:
         # 对config进行兼容处理
         config.compatible()
         return config
-
-    @classmethod
-    def get_dynamic_config(cls, config):
-        return DynamicConfig(config)

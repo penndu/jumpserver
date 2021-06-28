@@ -3,11 +3,12 @@
 from rest_framework.generics import ListAPIView
 from rest_framework.response import Response
 
+from common.mixins.api import CommonApiMixin
 from applications.api.mixin import (
-    SerializeApplicationToTreeNodeMixin, ApplicationAttrsSerializerViewMixin
+    SerializeApplicationToTreeNodeMixin
 )
 from perms import serializers
-from perms.api.asset.user_permission.mixin import ForAdminMixin, ForUserMixin
+from perms.api.asset.user_permission.mixin import RoleAdminMixin, RoleUserMixin
 from perms.utils.application.user_permission import (
     get_user_granted_all_applications
 )
@@ -21,10 +22,10 @@ __all__ = [
 ]
 
 
-class AllGrantedApplicationsMixin(ApplicationAttrsSerializerViewMixin, ListAPIView):
+class AllGrantedApplicationsMixin(CommonApiMixin, ListAPIView):
     only_fields = serializers.ApplicationGrantedSerializer.Meta.only_fields
     serializer_class = serializers.ApplicationGrantedSerializer
-    filter_fields = ['id', 'name', 'category', 'type', 'comment']
+    filterset_fields = ['id', 'name', 'category', 'type', 'comment']
     search_fields = ['name', 'comment']
     user: None
 
@@ -33,11 +34,11 @@ class AllGrantedApplicationsMixin(ApplicationAttrsSerializerViewMixin, ListAPIVi
         return queryset.only(*self.only_fields)
 
 
-class UserAllGrantedApplicationsApi(ForAdminMixin, AllGrantedApplicationsMixin):
+class UserAllGrantedApplicationsApi(RoleAdminMixin, AllGrantedApplicationsMixin):
     pass
 
 
-class MyAllGrantedApplicationsApi(ForUserMixin, AllGrantedApplicationsMixin):
+class MyAllGrantedApplicationsApi(RoleUserMixin, AllGrantedApplicationsMixin):
     pass
 
 

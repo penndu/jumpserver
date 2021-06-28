@@ -4,7 +4,7 @@ from django.utils.translation import ugettext_lazy as _
 from django.db.models import Prefetch
 from rest_framework import serializers
 
-from common.serializers import AdaptedBulkListSerializer
+from common.drf.serializers import AdaptedBulkListSerializer
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
 from django.db.models import Count
 from ..models import User, UserGroup
@@ -53,7 +53,3 @@ class UserGroupSerializer(BulkOrgResourceModelSerializer):
             Prefetch('users', queryset=User.objects.only('id'))
         ).annotate(users_amount=Count('users'))
         return queryset
-
-    def validate_users(self, users):
-        users = [user for user in users if user.role != User.ROLE.AUDITOR]
-        return users

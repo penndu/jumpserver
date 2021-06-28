@@ -4,6 +4,7 @@
 from django.db import models, transaction
 from django.db.models import Max
 from django.utils.translation import ugettext_lazy as _
+from rest_framework.exceptions import PermissionDenied
 
 from orgs.mixins.models import OrgManager
 from .base import BaseUser
@@ -14,7 +15,7 @@ __all__ = ['AuthBook']
 class AuthBookQuerySet(models.QuerySet):
     def delete(self):
         if self.count() > 1:
-            raise PermissionError(_("Bulk delete deny"))
+            raise PermissionDenied(_("Bulk delete deny"))
         return super().delete()
 
 
@@ -57,7 +58,7 @@ class AuthBook(BaseUser):
         同时设置自己的 is_latest=True, version=max_version + 1
         """
         username = kwargs['username']
-        asset = kwargs['asset']
+        asset = kwargs.get('asset') or kwargs.get('asset_id')
         with transaction.atomic():
             # 使用select_for_update限制并发创建相同的username、asset条目
             instances = cls.objects.select_for_update().filter(username=username, asset=asset)

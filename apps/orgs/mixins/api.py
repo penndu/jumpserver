@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
 #
-from django.shortcuts import get_object_or_404
 from rest_framework.viewsets import ModelViewSet, GenericViewSet
 from rest_framework_bulk import BulkModelViewSet
+from rest_framework.exceptions import MethodNotAllowed
+from django.utils.translation import ugettext_lazy as _
+
 from common.mixins import CommonApiMixin, RelationMixin
 from orgs.utils import current_org
 
 from ..utils import set_to_root_org
-from ..models import Organization
 
 __all__ = [
-    'RootOrgViewMixin', 'OrgMembershipModelViewSetMixin', 'OrgModelViewSet',
-    'OrgBulkModelViewSet', 'OrgQuerySetMixin', 'OrgGenericViewSet', 'OrgRelationMixin'
+    'RootOrgViewMixin', 'OrgModelViewSet', 'OrgBulkModelViewSet', 'OrgQuerySetMixin',
+    'OrgGenericViewSet', 'OrgRelationMixin'
 ]
 
 
@@ -41,15 +42,19 @@ class OrgQuerySetMixin:
         return queryset
 
 
-class OrgModelViewSet(CommonApiMixin, OrgQuerySetMixin, ModelViewSet):
+class OrgViewSetMixin(OrgQuerySetMixin):
     pass
 
 
-class OrgGenericViewSet(CommonApiMixin, OrgQuerySetMixin, GenericViewSet):
+class OrgModelViewSet(CommonApiMixin, OrgViewSetMixin, ModelViewSet):
     pass
 
 
-class OrgBulkModelViewSet(CommonApiMixin, OrgQuerySetMixin, BulkModelViewSet):
+class OrgGenericViewSet(CommonApiMixin, OrgViewSetMixin, GenericViewSet):
+    pass
+
+
+class OrgBulkModelViewSet(CommonApiMixin, OrgViewSetMixin, BulkModelViewSet):
     def allow_bulk_destroy(self, qs, filtered):
         qs_count = qs.count()
         filtered_count = filtered.count()
@@ -62,31 +67,10 @@ class OrgBulkModelViewSet(CommonApiMixin, OrgQuerySetMixin, BulkModelViewSet):
         return False
 
 
-class OrgMembershipModelViewSetMixin:
-    org = None
-    membership_class = None
-    lookup_field = 'user'
-    lookup_url_kwarg = 'user_id'
-    http_method_names = ['get', 'post', 'delete', 'head', 'options']
-
-    def dispatch(self, request, *args, **kwargs):
-        self.org = get_object_or_404(Organization, pk=kwargs.get('org_id'))
-        return super().dispatch(request, *args, **kwargs)
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context['org'] = self.org
-        return context
-
-    def get_queryset(self):
-        queryset = self.membership_class.objects.filter(organization=self.org)
-        return queryset
-
-
 class OrgRelationMixin(RelationMixin):
     def get_queryset(self):
         queryset = super().get_queryset()
-        org_id = current_org.org_id()
-        if org_id is not None:
+        if not current_org.is_root():
+            org_id = current_org.org_id()
             queryset = queryset.filter(**{f'{self.from_field}__org_id': org_id})
         return queryset

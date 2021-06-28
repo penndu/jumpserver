@@ -1,24 +1,26 @@
 # -*- coding: utf-8 -*-
 #
-from collections import OrderedDict
 import logging
 import uuid
 
 from django.core.cache import cache
-from django.shortcuts import get_object_or_404
-from rest_framework import viewsets
+from rest_framework import generics
 from rest_framework.views import APIView, Response
-from rest_framework.permissions import AllowAny
+from rest_framework import status
+from django.conf import settings
+from django.utils.translation import gettext_lazy as _
 
+from common.exceptions import JMSException
 from common.drf.api import JMSBulkModelViewSet
 from common.utils import get_object_or_none
-from common.permissions import IsAppUser, IsOrgAdminOrAppUser, IsSuperUser
-from ..models import Terminal, Status, Session
+from common.permissions import IsAppUser, IsSuperUser, WithBootstrapToken
+from ..models import Terminal
 from .. import serializers
 from .. import exceptions
 
 __all__ = [
-    'TerminalViewSet', 'TerminalTokenApi', 'StatusViewSet', 'TerminalConfig',
+    'TerminalViewSet',  'TerminalConfig',
+    'TerminalRegistrationApi',
 ]
 logger = logging.getLogger(__file__)
 
@@ -27,7 +29,18 @@ class TerminalViewSet(JMSBulkModelViewSet):
     queryset = Terminal.objects.filter(is_deleted=False)
     serializer_class = serializers.TerminalSerializer
     permission_classes = (IsSuperUser,)
-    filter_fields = ['name', 'remote_addr', 'type']
+    filterset_fields = ['name', 'remote_addr', 'type']
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.get_online_session_count() > 0:
+            raise JMSException(
+                code='have_online_session',
+                detail=_('Have online sessions')
+            )
+
+        self.perform_destroy(instance)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     def create(self, request, *args, **kwargs):
         if isinstance(request.data, list):
@@ -69,86 +82,22 @@ class TerminalViewSet(JMSBulkModelViewSet):
         queryset = queryset.filter(id__in=filtered_queryset_id)
         return queryset
 
-    def get_permissions(self):
-        if self.action == "create":
-            self.permission_classes = (AllowAny,)
-        return super().get_permissions()
-
-
-class TerminalTokenApi(APIView):
-    permission_classes = (AllowAny,)
-    queryset = Terminal.objects.filter(is_deleted=False)
-
-    def get(self, request, *args, **kwargs):
-        try:
-            terminal = self.queryset.get(id=kwargs.get('terminal'))
-        except Terminal.DoesNotExist:
-            terminal = None
-
-        token = request.query_params.get("token")
-
-        if terminal is None:
-            return Response('May be reject by administrator', status=401)
-
-        if token is None or cache.get(token, "") != str(terminal.id):
-            return Response('Token is not valid', status=401)
-
-        if not terminal.is_accepted:
-            return Response("Terminal was not accepted yet", status=400)
-
-        if not terminal.user or not terminal.user.access_key:
-            return Response("No access key generate", status=401)
-
-        access_key = terminal.user.access_key()
-        data = OrderedDict()
-        data['access_key'] = {'id': access_key.id, 'secret': access_key.secret}
-        return Response(data, status=200)
-
-
-class StatusViewSet(viewsets.ModelViewSet):
-    queryset = Status.objects.all()
-    serializer_class = serializers.StatusSerializer
-    permission_classes = (IsOrgAdminOrAppUser,)
-    session_serializer_class = serializers.SessionSerializer
-    task_serializer_class = serializers.TaskSerializer
-
-    def create(self, request, *args, **kwargs):
-        self.handle_sessions()
-        tasks = self.request.user.terminal.task_set.filter(is_finished=False)
-        serializer = self.task_serializer_class(tasks, many=True)
-        return Response(serializer.data, status=201)
-
-    def handle_sessions(self):
-        sessions_id = self.request.data.get('sessions', [])
-        # guacamole 上报的 session 是字符串
-        # "[53cd3e47-210f-41d8-b3c6-a184f3, 53cd3e47-210f-41d8-b3c6-a184f4]"
-        if isinstance(sessions_id, str):
-            sessions_id = sessions_id[1:-1].split(',')
-            sessions_id = [sid.strip() for sid in sessions_id if sid.strip()]
-        Session.set_sessions_active(sessions_id)
-
-    def get_queryset(self):
-        terminal_id = self.kwargs.get("terminal", None)
-        if terminal_id:
-            terminal = get_object_or_404(Terminal, id=terminal_id)
-            self.queryset = terminal.status_set.all()
-        return self.queryset
-
-    def perform_create(self, serializer):
-        serializer.validated_data["terminal"] = self.request.user.terminal
-        return super().perform_create(serializer)
-
-    def get_permissions(self):
-        if self.action == "create":
-            self.permission_classes = (IsAppUser,)
-        return super().get_permissions()
-
 
 class TerminalConfig(APIView):
     permission_classes = (IsAppUser,)
 
     def get(self, request):
-        user = request.user
-        terminal = user.terminal
-        configs = terminal.config
-        return Response(configs, status=200)
+        config = request.user.terminal.config
+        return Response(config, status=200)
+
+
+class TerminalRegistrationApi(generics.CreateAPIView):
+    serializer_class = serializers.TerminalRegistrationSerializer
+    permission_classes = [WithBootstrapToken]
+    http_method_names = ['post']
+
+    def create(self, request, *args, **kwargs):
+        if not settings.SECURITY_SERVICE_ACCOUNT_REGISTRATION:
+            data = {"error": "service account registration disabled"}
+            return Response(data=data, status=status.HTTP_400_BAD_REQUEST)
+        return super().create(request, *args, **kwargs)

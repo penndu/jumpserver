@@ -3,7 +3,7 @@ import os
 from django.urls import reverse_lazy
 
 from .. import const
-from ..const import CONFIG, DYNAMIC
+from ..const import CONFIG
 
 # Build paths inside the project like this: os.path.join(BASE_DIR, ...)
 VERSION = const.VERSION
@@ -16,14 +16,14 @@ PROJECT_DIR = const.PROJECT_DIR
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = CONFIG.SECRET_KEY
 
-# SECURITY WARNING: keep the token secret, remove it if all coco, guacamole ok
+# SECURITY WARNING: keep the token secret, remove it if all koko, lion ok
 BOOTSTRAP_TOKEN = CONFIG.BOOTSTRAP_TOKEN
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = CONFIG.DEBUG
 
 # Absolute url for some case, for example email link
-SITE_URL = DYNAMIC.SITE_URL
+SITE_URL = CONFIG.SITE_URL
 
 # LOG LEVEL
 LOG_LEVEL = CONFIG.LOG_LEVEL
@@ -42,12 +42,14 @@ INSTALLED_APPS = [
     'perms.apps.PermsConfig',
     'ops.apps.OpsConfig',
     'settings.apps.SettingsConfig',
-    'common.apps.CommonConfig',
     'terminal.apps.TerminalConfig',
     'audits.apps.AuditsConfig',
     'authentication.apps.AuthenticationConfig',  # authentication
     'applications.apps.ApplicationsConfig',
     'tickets.apps.TicketsConfig',
+    'acls.apps.AclsConfig',
+    'notifications.apps.NotificationsConfig',
+    'common.apps.CommonConfig',
     'jms_oidc_rp',
     'rest_framework',
     'rest_framework_swagger',
@@ -120,8 +122,11 @@ LOGIN_URL = reverse_lazy('authentication:login')
 SESSION_COOKIE_DOMAIN = CONFIG.SESSION_COOKIE_DOMAIN
 CSRF_COOKIE_DOMAIN = CONFIG.CSRF_COOKIE_DOMAIN
 SESSION_COOKIE_AGE = CONFIG.SESSION_COOKIE_AGE
-SESSION_EXPIRE_AT_BROWSER_CLOSE = CONFIG.SESSION_EXPIRE_AT_BROWSER_CLOSE
-SESSION_ENGINE = 'redis_sessions.session'
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+# 自定义的配置，SESSION_EXPIRE_AT_BROWSER_CLOSE 始终为 True, 下面这个来控制是否强制关闭后过期 cookie
+SESSION_EXPIRE_AT_BROWSER_CLOSE_FORCE = CONFIG.SESSION_EXPIRE_AT_BROWSER_CLOSE_FORCE
+SESSION_SAVE_EVERY_REQUEST = CONFIG.SESSION_SAVE_EVERY_REQUEST
+SESSION_ENGINE = 'jumpserver.rewriting.session'
 SESSION_REDIS = {
     'host': CONFIG.REDIS_HOST,
     'port': CONFIG.REDIS_PORT,
@@ -216,14 +221,14 @@ MEDIA_ROOT = os.path.join(PROJECT_DIR, 'data', 'media').replace('\\', '/') + '/'
 FIXTURE_DIRS = [os.path.join(BASE_DIR, 'fixtures'), ]
 
 # Email config
-EMAIL_HOST = DYNAMIC.EMAIL_HOST
-EMAIL_PORT = DYNAMIC.EMAIL_PORT
-EMAIL_HOST_USER = DYNAMIC.EMAIL_HOST_USER
-EMAIL_HOST_PASSWORD = DYNAMIC.EMAIL_HOST_PASSWORD
-EMAIL_FROM = DYNAMIC.EMAIL_FROM
-EMAIL_RECIPIENT = DYNAMIC.EMAIL_RECIPIENT
-EMAIL_USE_SSL = DYNAMIC.EMAIL_USE_SSL
-EMAIL_USE_TLS = DYNAMIC.EMAIL_USE_TLS
+EMAIL_HOST = CONFIG.EMAIL_HOST
+EMAIL_PORT = CONFIG.EMAIL_PORT
+EMAIL_HOST_USER = CONFIG.EMAIL_HOST_USER
+EMAIL_HOST_PASSWORD = CONFIG.EMAIL_HOST_PASSWORD
+EMAIL_FROM = CONFIG.EMAIL_FROM
+EMAIL_RECIPIENT = CONFIG.EMAIL_RECIPIENT
+EMAIL_USE_SSL = CONFIG.EMAIL_USE_SSL
+EMAIL_USE_TLS = CONFIG.EMAIL_USE_TLS
 
 
 # Custom User Auth model

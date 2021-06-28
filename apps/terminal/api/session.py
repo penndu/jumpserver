@@ -42,10 +42,10 @@ class SessionViewSet(OrgBulkModelViewSet):
         'display': serializers.SessionDisplaySerializer,
     }
     permission_classes = (IsOrgAdminOrAppUser, )
-    filter_fields = [
-        "user", "asset", "system_user", "remote_addr",
-        "protocol", "terminal", "is_finished", 'login_from',
+    search_fields = [
+        "user", "asset", "system_user", "remote_addr", "protocol", "is_finished", 'login_from',
     ]
+    filterset_fields = search_fields + ['terminal']
     date_range_filter_fields = [
         ('date_start', ('date_from', 'date_to'))
     ]
@@ -76,8 +76,7 @@ class SessionViewSet(OrgBulkModelViewSet):
         session = self.get_object()
         local_path, url = utils.get_session_replay_url(session)
         if local_path is None:
-            error = url
-            return HttpResponse(error)
+            return Response({"error": url}, status=404)
         file = self.prepare_offline_file(session, local_path)
 
         response = FileResponse(file)
@@ -91,7 +90,7 @@ class SessionViewSet(OrgBulkModelViewSet):
 
     def filter_queryset(self, queryset):
         queryset = super().filter_queryset(queryset)
-        # 解决guacamole更新session时并发导致幽灵会话的问题
+        # 解决guacamole更新session时并发导致幽灵会话的问题，暂不处理
         if self.request.method in ('PATCH',):
             queryset = queryset.select_for_update()
         return queryset
@@ -99,11 +98,6 @@ class SessionViewSet(OrgBulkModelViewSet):
     def perform_create(self, serializer):
         if hasattr(self.request.user, 'terminal'):
             serializer.validated_data["terminal"] = self.request.user.terminal
-        sid = serializer.validated_data["system_user"]
-        # guacamole提交的是id
-        if is_uuid(sid):
-            _system_user = get_object_or_404(SystemUser, id=sid)
-            serializer.validated_data["system_user"] = _system_user.name
         return super().perform_create(serializer)
 
     def get_permissions(self):
@@ -141,6 +135,7 @@ class SessionReplayViewSet(AsyncApiMixin, viewsets.ViewSet):
     def get_replay_data(session, url):
         tp = 'json'
         if session.protocol in ('rdp', 'vnc'):
+            # 需要考虑录像播放和离线播放器的约定，暂时不处理
             tp = 'guacamole'
 
         download_url = reverse('api-terminal:session-replay-download', kwargs={'pk': session.id})
@@ -167,7 +162,7 @@ class SessionReplayViewSet(AsyncApiMixin, viewsets.ViewSet):
         if not local_path:
             local_path, url = download_session_replay(session)
             if not local_path:
-                return Response({"error": url})
+                return Response({"error": url}, status=404)
         data = self.get_replay_data(session, url)
         return Response(data)
 

@@ -3,10 +3,10 @@
 from rest_framework.generics import UpdateAPIView
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from rest_framework.permissions import AllowAny
 from django.shortcuts import get_object_or_404
-from django.utils.translation import ugettext as _
 
-from common.utils import get_logger, get_object_or_none
+from common.utils import get_logger
 from common.permissions import IsOrgAdmin
 from ..models import LoginConfirmSetting
 from ..serializers import LoginConfirmSettingSerializer
@@ -32,7 +32,7 @@ class LoginConfirmSettingUpdateApi(UpdateAPIView):
 
 
 class TicketStatusApi(mixins.AuthMixin, APIView):
-    permission_classes = ()
+    permission_classes = (AllowAny,)
 
     def get(self, request, *args, **kwargs):
         try:
@@ -45,5 +45,5 @@ class TicketStatusApi(mixins.AuthMixin, APIView):
         ticket = self.get_ticket()
         if ticket:
             request.session.pop('auth_ticket_id', '')
-            ticket.perform_status('closed', request.user)
+            ticket.close(processor=request.user)
         return Response('', status=200)

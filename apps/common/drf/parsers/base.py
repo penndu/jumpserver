@@ -1,6 +1,7 @@
 import abc
 import json
 import codecs
+from rest_framework import serializers
 from django.utils.translation import ugettext_lazy as _
 from rest_framework.parsers import BaseParser
 from rest_framework import status
@@ -21,6 +22,7 @@ class BaseFileParser(BaseParser):
     FILE_CONTENT_MAX_LENGTH = 1024 * 1024 * 10
 
     serializer_cls = None
+    serializer_fields = None
 
     def check_content_length(self, meta):
         content_length = int(meta.get('CONTENT_LENGTH', meta.get('HTTP_CONTENT_LENGTH', 0)))
@@ -44,9 +46,14 @@ class BaseFileParser(BaseParser):
 
     def convert_to_field_names(self, column_titles):
         fields_map = {}
-        fields = self.serializer_cls().fields
-        fields_map.update({v.label: k for k, v in fields.items()})
-        fields_map.update({k: k for k, _ in fields.items()})
+        fields = self.serializer_fields
+        for k, v in fields.items():
+            if v.read_only:
+                continue
+            fields_map.update({
+                v.label: k,
+                k: k
+            })
         field_names = [
             fields_map.get(column_title.strip('*'), '')
             for column_title in column_titles
@@ -55,6 +62,8 @@ class BaseFileParser(BaseParser):
 
     @staticmethod
     def _replace_chinese_quote(s):
+        if not isinstance(s, str):
+            return s
         trans_table = str.maketrans({
             '“': '"',
             '”': '"',
@@ -83,14 +92,17 @@ class BaseFileParser(BaseParser):
             new_row.append(col)
         return new_row
 
-    @staticmethod
-    def process_row_data(row_data):
+    def process_row_data(self, row_data):
         """
         构建json数据后的行数据处理
         """
         new_row_data = {}
+        serializer_fields = self.serializer_fields
         for k, v in row_data.items():
-            if isinstance(v, list) or isinstance(v, dict) or isinstance(v, str) and k.strip() and v.strip():
+            if type(v) in [list, dict, int] or (isinstance(v, str) and k.strip() and v.strip()):
+                # 解决类似disk_info为字符串的'{}'的问题
+                if not isinstance(v, str) and isinstance(serializer_fields[k], serializers.CharField):
+                    v = str(v)
                 new_row_data[k] = v
         return new_row_data
 
@@ -107,12 +119,15 @@ class BaseFileParser(BaseParser):
         return data
 
     def parse(self, stream, media_type=None, parser_context=None):
-        parser_context = parser_context or {}
+        assert parser_context is not None, '`parser_context` should not be `None`'
+
+        view = parser_context['view']
+        request = view.request
 
         try:
-            view = parser_context['view']
-            meta = view.request.META
+            meta = request.META
             self.serializer_cls = view.get_serializer_class()
+            self.serializer_fields = self.serializer_cls().fields
         except Exception as e:
             logger.debug(e, exc_info=True)
             raise ParseError('The resource does not support imports!')
@@ -124,9 +139,16 @@ class BaseFileParser(BaseParser):
             rows = self.generate_rows(stream_data)
             column_titles = self.get_column_titles(rows)
             field_names = self.convert_to_field_names(column_titles)
+
+            # 给 `common.mixins.api.RenderToJsonMixin` 提供，暂时只能耦合
+            column_title_field_pairs = list(zip(column_titles, field_names))
+            if not hasattr(request, 'jms_context'):
+                request.jms_context = {}
+            request.jms_context['column_title_field_pairs'] = column_title_field_pairs
+
             data = self.generate_data(field_names, rows)
             return data
         except Exception as e:
             logger.error(e, exc_info=True)
-            raise ParseError('Parse error! ({})'.format(self.media_type))
+            raise ParseError(_('Parse file error: {}').format(e))
 

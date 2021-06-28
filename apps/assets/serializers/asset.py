@@ -2,7 +2,7 @@
 #
 from rest_framework import serializers
 from django.db.models import F
-
+from django.core.validators import RegexValidator
 from django.utils.translation import ugettext_lazy as _
 
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
@@ -65,7 +65,7 @@ class AssetSerializer(BulkOrgResourceModelSerializer):
     platform = serializers.SlugRelatedField(
         slug_field='name', queryset=Platform.objects.all(), label=_("Platform")
     )
-    protocols = ProtocolsField(label=_('Protocols'), required=False)
+    protocols = ProtocolsField(label=_('Protocols'), required=False, default=['ssh/22'])
     domain_display = serializers.ReadOnlyField(source='domain.name', label=_('Domain name'))
     admin_user_display = serializers.ReadOnlyField(source='admin_user.name', label=_('Admin user name'))
     nodes_display = serializers.ListField(child=serializers.CharField(), label=_('Nodes name'), required=False)
@@ -111,7 +111,7 @@ class AssetSerializer(BulkOrgResourceModelSerializer):
     @classmethod
     def setup_eager_loading(cls, queryset):
         """ Perform necessary eager loading of data. """
-        queryset = queryset.select_related('admin_user', 'domain', 'platform')
+        queryset = queryset.prefetch_related('admin_user', 'domain', 'platform')
         queryset = queryset.prefetch_related('nodes', 'labels')
         return queryset
 
@@ -166,16 +166,17 @@ class AssetDisplaySerializer(AssetSerializer):
             'connectivity',
         ]
 
-    @classmethod
-    def setup_eager_loading(cls, queryset):
-        queryset = super().setup_eager_loading(queryset)
-        queryset = queryset\
-            .annotate(admin_user_username=F('admin_user__username'))
-        return queryset
-
 
 class PlatformSerializer(serializers.ModelSerializer):
-    meta = serializers.DictField(required=False, allow_null=True)
+    meta = serializers.DictField(required=False, allow_null=True, label=_('Meta'))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # TODO 修复 drf SlugField RegexValidator bug，之后记得删除
+        validators = self.fields['name'].validators
+        if isinstance(validators[-1], RegexValidator):
+            validators.pop()
 
     class Meta:
         model = Platform
@@ -204,3 +205,6 @@ class AssetTaskSerializer(serializers.Serializer):
     )
     task = serializers.CharField(read_only=True)
     action = serializers.ChoiceField(choices=ACTION_CHOICES, write_only=True)
+    assets = serializers.PrimaryKeyRelatedField(
+        queryset=Asset.objects, required=False, allow_empty=True, many=True
+    )

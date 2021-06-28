@@ -10,10 +10,10 @@ from common.permissions import IsOrgAdminOrAppUser, NeedMFAVerify
 from common.utils import get_object_or_none, get_logger
 from common.mixins import CommonApiMixin
 from ..backends import AssetUserManager
-from ..models import Asset, Node, SystemUser
+from ..models import Node
 from .. import serializers
 from ..tasks import (
-    test_asset_users_connectivity_manual, push_system_user_a_asset_manual
+    test_asset_users_connectivity_manual
 )
 
 
@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 class AssetUserFilterBackend(filters.BaseFilterBackend):
     def filter_queryset(self, request, queryset, view):
         kwargs = {}
-        for field in view.filter_fields:
+        for field in view.filterset_fields:
             value = request.GET.get(field)
             if not value:
                 continue
@@ -78,7 +78,7 @@ class AssetUserViewSet(CommonApiMixin, BulkModelViewSet):
         'retrieve': serializers.AssetUserReadSerializer,
     }
     permission_classes = [IsOrgAdminOrAppUser]
-    filter_fields = [
+    filterset_fields = [
         "id", "ip", "hostname", "username",
         "asset_id", "node_id",
         "prefer", "prefer_id",
@@ -99,12 +99,6 @@ class AssetUserViewSet(CommonApiMixin, BulkModelViewSet):
         queryset = self.get_queryset()
         obj = queryset.get(id=pk)
         return obj
-
-    def get_exception_handler(self):
-        def handler(e, context):
-            logger.error(e, exc_info=True)
-            return Response({"error": str(e)}, status=400)
-        return handler
 
     def perform_destroy(self, instance):
         manager = AssetUserManager()
@@ -131,7 +125,7 @@ class AssetUserTaskCreateAPI(generics.CreateAPIView):
     permission_classes = (IsOrgAdminOrAppUser,)
     serializer_class = serializers.AssetUserTaskSerializer
     filter_backends = AssetUserViewSet.filter_backends
-    filter_fields = AssetUserViewSet.filter_fields
+    filterset_fields = AssetUserViewSet.filterset_fields
 
     def get_asset_users(self):
         manager = AssetUserManager()

@@ -1,23 +1,32 @@
 # -*- coding: utf-8 -*-
 #
-import uuid
 import re
+import time
+import uuid
+import threading
+import os
+import time
+import uuid
 
+from collections import defaultdict
 from django.db import models, transaction
-from django.db.models import Q
+from django.db.models import Q, Manager
 from django.db.utils import IntegrityError
 from django.utils.translation import ugettext_lazy as _
 from django.utils.translation import ugettext
 from django.db.transaction import atomic
+from django.core.cache import cache
 
+from common.utils.lock import DistributedLock
+from common.utils.common import timeit
+from common.db.models import output_as_string
 from common.utils import get_logger
-from common.utils.common import lazyproperty
 from orgs.mixins.models import OrgModelMixin, OrgManager
-from orgs.utils import get_current_org, tmp_to_org
+from orgs.utils import get_current_org, tmp_to_org, tmp_to_root_org
 from orgs.models import Organization
 
 
-__all__ = ['Node', 'FamilyMixin', 'compute_parent_key']
+__all__ = ['Node', 'FamilyMixin', 'compute_parent_key', 'NodeQuerySet']
 logger = get_logger(__name__)
 
 
@@ -29,8 +38,7 @@ def compute_parent_key(key):
 
 
 class NodeQuerySet(models.QuerySet):
-    def delete(self):
-        raise NotImplementedError
+    pass
 
 
 class FamilyMixin:
@@ -38,6 +46,7 @@ class FamilyMixin:
     __children = None
     __all_children = None
     is_node = True
+    child_mark: int
 
     @staticmethod
     def clean_children_keys(nodes_keys):
@@ -121,11 +130,22 @@ class FamilyMixin:
             created = True
         return child, created
 
+    def get_valid_child_mark(self):
+        key = "{}:{}".format(self.key, self.child_mark)
+        if not self.__class__.objects.filter(key=key).exists():
+            return self.child_mark
+        children_keys = self.get_children().values_list('key', flat=True)
+        children_keys_last = [key.split(':')[-1] for key in children_keys]
+        children_keys_last = [int(k) for k in children_keys_last if k.strip().isdigit()]
+        max_key_last = max(children_keys_last) if children_keys_last else 1
+        return max_key_last + 1
+
     def get_next_child_key(self):
-        mark = self.child_mark
-        self.child_mark += 1
+        child_mark = self.get_valid_child_mark()
+        key = "{}:{}".format(self.key, child_mark)
+        self.child_mark = child_mark + 1
         self.save()
-        return "{}:{}".format(self.key, mark)
+        return key
 
     def get_next_child_preset_name(self):
         name = ugettext("New node")
@@ -235,9 +255,156 @@ class FamilyMixin:
         return [*tuple(ancestors), self, *tuple(children)]
 
 
-class NodeAssetsMixin:
+class NodeAllAssetsMappingMixin:
+    # Use a new plan
+
+    # { org_id: { node_key: [ asset1_id, asset2_id ] } }
+    orgid_nodekey_assetsid_mapping = defaultdict(dict)
+    locks_for_get_mapping_from_cache = defaultdict(threading.Lock)
+
+    @classmethod
+    def get_lock(cls, org_id):
+        lock = cls.locks_for_get_mapping_from_cache[str(org_id)]
+        return lock
+
+    @classmethod
+    def get_node_all_asset_ids_mapping(cls, org_id):
+        _mapping = cls.get_node_all_asset_ids_mapping_from_memory(org_id)
+        if _mapping:
+            return _mapping
+
+        logger.debug(f'Get node asset mapping from memory failed, acquire thread lock: '
+                     f'thread={threading.get_ident()} '
+                     f'org_id={org_id}')
+        with cls.get_lock(org_id):
+            logger.debug(f'Acquired thread lock ok. check if mapping is in memory now: '
+                         f'thread={threading.get_ident()} '
+                         f'org_id={org_id}')
+            _mapping = cls.get_node_all_asset_ids_mapping_from_memory(org_id)
+            if _mapping:
+                logger.debug(f'Mapping is already in memory now: '
+                             f'thread={threading.get_ident()} '
+                             f'org_id={org_id}')
+                return _mapping
+
+            _mapping = cls.get_node_all_asset_ids_mapping_from_cache_or_generate_to_cache(org_id)
+            cls.set_node_all_asset_ids_mapping_to_memory(org_id, mapping=_mapping)
+        return _mapping
+
+    # from memory
+    @classmethod
+    def get_node_all_asset_ids_mapping_from_memory(cls, org_id):
+        mapping = cls.orgid_nodekey_assetsid_mapping.get(org_id, {})
+        return mapping
+
+    @classmethod
+    def set_node_all_asset_ids_mapping_to_memory(cls, org_id, mapping):
+        cls.orgid_nodekey_assetsid_mapping[org_id] = mapping
+
+    @classmethod
+    def expire_node_all_asset_ids_mapping_from_memory(cls, org_id):
+        org_id = str(org_id)
+        cls.orgid_nodekey_assetsid_mapping.pop(org_id, None)
+
+    @classmethod
+    def expire_all_orgs_node_all_asset_ids_mapping_from_memory(cls):
+        orgs = Organization.objects.all()
+        org_ids = [str(org.id) for org in orgs]
+        org_ids.append(Organization.ROOT_ID)
+
+        for id in org_ids:
+            cls.expire_node_all_asset_ids_mapping_from_memory(id)
+
+    # get order: from memory -> (from cache -> to generate)
+    @classmethod
+    def get_node_all_asset_ids_mapping_from_cache_or_generate_to_cache(cls, org_id):
+        mapping = cls.get_node_all_asset_ids_mapping_from_cache(org_id)
+        if mapping:
+            return mapping
+
+        lock_key = f'KEY_LOCK_GENERATE_ORG_{org_id}_NODE_ALL_ASSET_ids_MAPPING'
+        with DistributedLock(lock_key):
+            # 这里使用无限期锁，原因是如果这里卡住了，就卡在数据库了，说明
+            # 数据库繁忙，所以不应该再有线程执行这个操作，使数据库忙上加忙
+
+            _mapping = cls.get_node_all_asset_ids_mapping_from_cache(org_id)
+            if _mapping:
+                return _mapping
+
+            _mapping = cls.generate_node_all_asset_ids_mapping(org_id)
+            cls.set_node_all_asset_ids_mapping_to_cache(org_id=org_id, mapping=_mapping)
+            return _mapping
+
+    @classmethod
+    def get_node_all_asset_ids_mapping_from_cache(cls, org_id):
+        cache_key = cls._get_cache_key_for_node_all_asset_ids_mapping(org_id)
+        mapping = cache.get(cache_key)
+        logger.info(f'Get node asset mapping from cache {bool(mapping)}: '
+                    f'thread={threading.get_ident()} '
+                    f'org_id={org_id}')
+        return mapping
+
+    @classmethod
+    def set_node_all_asset_ids_mapping_to_cache(cls, org_id, mapping):
+        cache_key = cls._get_cache_key_for_node_all_asset_ids_mapping(org_id)
+        cache.set(cache_key, mapping, timeout=None)
+
+    @classmethod
+    def expire_node_all_asset_ids_mapping_from_cache(cls, org_id):
+        cache_key = cls._get_cache_key_for_node_all_asset_ids_mapping(org_id)
+        cache.delete(cache_key)
+
+    @staticmethod
+    def _get_cache_key_for_node_all_asset_ids_mapping(org_id):
+        return 'ASSETS_ORG_NODE_ALL_ASSET_ids_MAPPING_{}'.format(org_id)
+
+    @classmethod
+    def generate_node_all_asset_ids_mapping(cls, org_id):
+        from .asset import Asset
+
+        logger.info(f'Generate node asset mapping: '
+                    f'thread={threading.get_ident()} '
+                    f'org_id={org_id}')
+        t1 = time.time()
+        with tmp_to_org(org_id):
+            node_ids_key = Node.objects.annotate(
+                char_id=output_as_string('id')
+            ).values_list('char_id', 'key')
+
+            # * 直接取出全部. filter(node__org_id=org_id)(大规模下会更慢)
+            nodes_asset_ids = Asset.nodes.through.objects.all() \
+                .annotate(char_node_id=output_as_string('node_id')) \
+                .annotate(char_asset_id=output_as_string('asset_id')) \
+                .values_list('char_node_id', 'char_asset_id')
+
+            node_id_ancestor_keys_mapping = {
+                node_id: cls.get_node_ancestor_keys(node_key, with_self=True)
+                for node_id, node_key in node_ids_key
+            }
+
+            nodeid_assetsid_mapping = defaultdict(set)
+            for node_id, asset_id in nodes_asset_ids:
+                nodeid_assetsid_mapping[node_id].add(asset_id)
+
+        t2 = time.time()
+
+        mapping = defaultdict(set)
+        for node_id, node_key in node_ids_key:
+            asset_ids = nodeid_assetsid_mapping[node_id]
+            node_ancestor_keys = node_id_ancestor_keys_mapping[node_id]
+            for ancestor_key in node_ancestor_keys:
+                mapping[ancestor_key].update(asset_ids)
+
+        t3 = time.time()
+        logger.info('t1-t2(DB Query): {} s, t3-t2(Generate mapping): {} s'.format(t2-t1, t3-t2))
+        return mapping
+
+
+class NodeAssetsMixin(NodeAllAssetsMappingMixin):
+    org_id: str
     key = ''
     id = None
+    objects: Manager
 
     def get_all_assets(self):
         from .asset import Asset
@@ -251,8 +418,7 @@ class NodeAssetsMixin:
         #   可是 startswith 会导致表关联时 Asset 索引失效
         from .asset import Asset
         node_ids = cls.objects.filter(
-            Q(key__startswith=f'{key}:') |
-            Q(key=key)
+            Q(key__startswith=f'{key}:') | Q(key=key)
         ).values_list('id', flat=True).distinct()
         assets = Asset.objects.filter(
             nodes__id__in=list(node_ids)
@@ -271,53 +437,41 @@ class NodeAssetsMixin:
         return self.get_all_assets().valid()
 
     @classmethod
-    def get_nodes_all_assets_ids(cls, nodes_keys):
-        assets_ids = cls.get_nodes_all_assets(nodes_keys).values_list('id', flat=True)
-        return assets_ids
+    def get_nodes_all_asset_ids_by_keys(cls, nodes_keys):
+        nodes = Node.objects.filter(key__in=nodes_keys)
+        asset_ids = cls.get_nodes_all_assets(*nodes).values_list('id', flat=True)
+        return asset_ids
 
     @classmethod
-    def get_nodes_all_assets(cls, nodes_keys, extra_assets_ids=None):
+    def get_nodes_all_assets(cls, *nodes):
         from .asset import Asset
-        nodes_keys = cls.clean_children_keys(nodes_keys)
-        q = Q()
-        node_ids = ()
-        for key in nodes_keys:
-            q |= Q(key__startswith=f'{key}:')
-            q |= Q(key=key)
-        if q:
-            node_ids = Node.objects.filter(q).distinct().values_list('id', flat=True)
+        node_ids = set()
+        descendant_node_query = Q()
+        for n in nodes:
+            node_ids.add(n.id)
+            descendant_node_query |= Q(key__istartswith=f'{n.key}:')
+        if descendant_node_query:
+            _ids = Node.objects.order_by().filter(descendant_node_query).values_list('id', flat=True)
+            node_ids.update(_ids)
+        return Asset.objects.order_by().filter(nodes__id__in=node_ids).distinct()
 
-        q = Q(nodes__id__in=list(node_ids))
-        if extra_assets_ids:
-            q |= Q(id__in=extra_assets_ids)
-        if q:
-            return Asset.org_objects.filter(q).distinct()
-        else:
-            return Asset.objects.none()
+    def get_all_asset_ids(self):
+        asset_ids = self.get_all_asset_ids_by_node_key(org_id=self.org_id, node_key=self.key)
+        return set(asset_ids)
+
+    @classmethod
+    def get_all_asset_ids_by_node_key(cls, org_id, node_key):
+        org_id = str(org_id)
+        nodekey_assetsid_mapping = cls.get_node_all_asset_ids_mapping(org_id)
+        asset_ids = nodekey_assetsid_mapping.get(node_key, [])
+        return set(asset_ids)
 
 
 class SomeNodesMixin:
     key = ''
     default_key = '1'
-    default_value = 'Default'
     empty_key = '-11'
     empty_value = _("empty")
-
-    @classmethod
-    def default_node(cls):
-        with tmp_to_org(Organization.default()):
-            defaults = {'value': cls.default_value}
-            try:
-                obj, created = cls.objects.get_or_create(
-                    defaults=defaults, key=cls.default_key,
-                )
-            except IntegrityError as e:
-                logger.error("Create default node failed: {}".format(e))
-                cls.modify_other_org_root_node_key()
-                obj, created = cls.objects.get_or_create(
-                    defaults=defaults, key=cls.default_key,
-                )
-            return obj
 
     def is_default_node(self):
         return self.key == self.default_key
@@ -329,70 +483,61 @@ class SomeNodesMixin:
             return False
 
     @classmethod
-    def get_next_org_root_node_key(cls):
-        with tmp_to_org(Organization.root()):
-            org_nodes_roots = cls.objects.filter(key__regex=r'^[0-9]+$')
-            org_nodes_roots_keys = org_nodes_roots.values_list('key', flat=True)
-            if not org_nodes_roots_keys:
-                org_nodes_roots_keys = ['1']
-            max_key = max([int(k) for k in org_nodes_roots_keys])
-            key = str(max_key + 1) if max_key != 0 else '2'
-            return key
+    def org_root(cls):
+        # 如果使用current_org 在set_current_org时会死循环
+        ori_org = get_current_org()
+
+        if ori_org and ori_org.is_default():
+            return cls.default_node()
+
+        if ori_org and ori_org.is_root():
+            return None
+
+        org_roots = cls.org_root_nodes()
+        org_roots_length = len(org_roots)
+
+        if org_roots_length == 1:
+            root = org_roots[0]
+            return root
+        elif org_roots_length == 0:
+            root = cls.create_org_root_node()
+            return root
+        else:
+            error = 'Current org {} root node not 1, get {}'.format(ori_org, org_roots_length)
+            raise ValueError(error)
+
+    @classmethod
+    def default_node(cls):
+        default_org = Organization.default()
+        with tmp_to_org(default_org):
+            defaults = {'value': default_org.name}
+            obj, created = cls.objects.get_or_create(defaults=defaults, key=cls.default_key)
+            return obj
 
     @classmethod
     def create_org_root_node(cls):
-        # 如果使用current_org 在set_current_org时会死循环
         ori_org = get_current_org()
         with transaction.atomic():
-            if not ori_org.is_real():
-                return cls.default_node()
             key = cls.get_next_org_root_node_key()
             root = cls.objects.create(key=key, value=ori_org.name)
             return root
 
     @classmethod
-    def org_root(cls):
-        root = cls.objects.filter(parent_key='')\
-            .filter(key__regex=r'^[0-9]+$')\
-            .exclude(key__startswith='-')\
-            .order_by('key')
-        if root:
-            return root[0]
-        else:
-            return cls.create_org_root_node()
+    def get_next_org_root_node_key(cls):
+        with tmp_to_root_org():
+            org_nodes_roots = cls.org_root_nodes()
+            org_nodes_roots_keys = org_nodes_roots.values_list('key', flat=True)
+            if not org_nodes_roots_keys:
+                org_nodes_roots_keys = ['1']
+            max_key = max([int(k) for k in org_nodes_roots_keys])
+            key = str(max_key + 1) if max_key > 0 else '2'
+            return key
 
     @classmethod
-    def initial_some_nodes(cls):
-        cls.default_node()
-
-    @classmethod
-    def modify_other_org_root_node_key(cls):
-        """
-        解决创建 default 节点失败的问题，
-        因为在其他组织下存在 default 节点，故在 DEFAULT 组织下 get 不到 create 失败
-        """
-        logger.info("Modify other org root node key")
-
-        with tmp_to_org(Organization.root()):
-            node_key1 = cls.objects.filter(key='1').first()
-            if not node_key1:
-                logger.info("Not found node that `key` = 1")
-                return
-            if not node_key1.org.is_real():
-                logger.info("Org is not real for node that `key` = 1")
-                return
-
-        with transaction.atomic():
-            with tmp_to_org(node_key1.org):
-                org_root_node_new_key = cls.get_next_org_root_node_key()
-                for n in cls.objects.all():
-                    old_key = n.key
-                    key_list = n.key.split(':')
-                    key_list[0] = org_root_node_new_key
-                    new_key = ':'.join(key_list)
-                    n.key = new_key
-                    n.save()
-                    logger.info('Modify key ( {} > {} )'.format(old_key, new_key))
+    def org_root_nodes(cls):
+        root_nodes = cls.objects.filter(parent_key='', key__regex=r'^[0-9]+$') \
+            .exclude(key__startswith='-').order_by('key')
+        return root_nodes
 
 
 class Node(OrgModelMixin, SomeNodesMixin, FamilyMixin, NodeAssetsMixin):
@@ -476,14 +621,14 @@ class Node(OrgModelMixin, SomeNodesMixin, FamilyMixin, NodeAssetsMixin):
         tree_node = TreeNode(**data)
         return tree_node
 
-    def has_children_or_has_assets(self):
-        if self.children or self.get_assets().exists():
-            return True
-        return False
+    def has_offspring_assets(self):
+        # 拥有后代资产
+        return self.get_all_assets().exists()
 
     def delete(self, using=None, keep_parents=False):
-        if self.has_children_or_has_assets():
+        if self.has_offspring_assets():
             return
+        self.all_children.delete()
         return super().delete(using=using, keep_parents=keep_parents)
 
     def update_child_full_value(self):

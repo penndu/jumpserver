@@ -72,6 +72,7 @@ def create_or_update_celery_periodic_tasks(tasks):
             crontab=crontab,
             name=name,
             task=detail['task'],
+            enabled=detail.get('enabled', True),
             args=json.dumps(detail.get('args', [])),
             kwargs=json.dumps(detail.get('kwargs', {})),
             description=detail.get('description') or ''
@@ -102,11 +103,8 @@ def get_celery_periodic_task(task_name):
 
 
 def get_celery_task_log_path(task_id):
-    task_id = str(task_id)
-    rel_path = os.path.join(task_id[0], task_id[1], task_id + '.log')
-    path = os.path.join(settings.CELERY_LOG_DIR, rel_path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    return path
+    from ops.utils import get_task_log_path
+    return get_task_log_path(settings.CELERY_LOG_DIR, task_id)
 
 
 def get_celery_status():
@@ -115,7 +113,8 @@ def get_celery_status():
     ping_data = i.ping() or {}
     active_nodes = [k for k, v in ping_data.items() if v.get('ok') == 'pong']
     active_queue_worker = set([n.split('@')[0] for n in active_nodes if n])
-    if len(active_queue_worker) < 5:
+    # Celery Worker 数量: 2
+    if len(active_queue_worker) < 2:
         print("Not all celery worker worked")
         return False
     else:

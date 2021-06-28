@@ -9,9 +9,11 @@ from django.utils.translation import ugettext_lazy as _
 from django.utils.translation import ugettext
 from django.db import models
 
+from terminal.notifications import CommandExecutionAlert
 from common.utils import lazyproperty
 from orgs.models import Organization
 from orgs.mixins.models import OrgModelMixin
+from orgs.utils import current_org, tmp_to_org
 from ..ansible.runner import CommandRunner
 from ..inventory import JMSInventory
 
@@ -30,6 +32,10 @@ class CommandExecution(OrgModelMixin):
 
     def __str__(self):
         return self.command[:10]
+
+    def save(self, *args, **kwargs):
+        with tmp_to_org(self.run_as.org_id):
+            super().save(*args, **kwargs)
 
     @property
     def inventory(self):
@@ -93,6 +99,12 @@ class CommandExecution(OrgModelMixin):
         else:
             msg = _("Command `{}` is forbidden ........").format(self.command)
             print('\033[31m' + msg + '\033[0m')
+            CommandExecutionAlert({
+                'input': self.command,
+                'assets': self.hosts.all(),
+                'user': str(self.user),
+                'risk_level': 5,
+            }).publish_async()
             self.result = {"error":  msg}
         self.org_id = self.run_as.org_id
         self.is_finished = True

@@ -4,7 +4,7 @@
 from django.utils.translation import ugettext as _
 from rest_framework import serializers
 
-from common.serializers import AdaptedBulkListSerializer
+from common.drf.serializers import AdaptedBulkListSerializer
 from orgs.mixins.serializers import BulkOrgResourceModelSerializer
 from ..models import AuthBook, Asset
 from ..backends import AssetUserManager
@@ -22,10 +22,11 @@ class AssetUserWriteSerializer(AuthSerializerMixin, BulkOrgResourceModelSerializ
     class Meta:
         model = AuthBook
         list_serializer_class = AdaptedBulkListSerializer
-        fields = [
-            'id', 'username', 'password', 'private_key', "public_key",
-            'asset', 'comment',
-        ]
+        fields_mini = ['id', 'username']
+        fields_write_only = ['password', 'private_key', "public_key"]
+        fields_small = fields_mini + fields_write_only + ['comment']
+        fields_fk = ['asset']
+        fields = fields_small + fields_fk
         extra_kwargs = {
             'username': {'required': True},
             'password': {'write_only': True},
@@ -46,18 +47,24 @@ class AssetUserReadSerializer(AssetUserWriteSerializer):
     ip = serializers.CharField(read_only=True, label=_("IP"))
     asset = serializers.CharField(source='asset_id', label=_('Asset'))
     backend = serializers.CharField(read_only=True, label=_("Backend"))
+    backend_display = serializers.CharField(read_only=True, label=_("Source"))
 
     class Meta(AssetUserWriteSerializer.Meta):
         read_only_fields = (
             'date_created', 'date_updated',
             'created_by', 'version',
         )
-        fields = [
-            'id', 'username', 'password', 'private_key', "public_key",
-            'asset', 'hostname', 'ip', 'backend', 'version',
-            'date_created', "date_updated", 'comment',
+        fields_mini = ['id', 'name', 'username']
+        fields_write_only = ['password', 'private_key', "public_key"]
+        fields_small = fields_mini + fields_write_only + [
+            'backend', 'backend_display', 'version',
+            'date_created', "date_updated",
+            'comment'
         ]
+        fields_fk = ['asset', 'hostname', 'ip']
+        fields = fields_small + fields_fk
         extra_kwargs = {
+            'name': {'required': False},
             'username': {'required': True},
             'password': {'write_only': True},
             'private_key': {'write_only': True},

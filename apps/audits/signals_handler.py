@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 #
-
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from django.utils.functional import LazyObject
 from django.contrib.auth import BACKEND_SESSION_KEY
 from django.utils.translation import ugettext_lazy as _
 from rest_framework.renderers import JSONRenderer
@@ -26,25 +27,46 @@ json_render = JSONRenderer()
 
 
 MODELS_NEED_RECORD = (
-    'User', 'UserGroup', 'Asset', 'Node', 'AdminUser', 'SystemUser',
-    'Domain', 'Gateway', 'Organization', 'AssetPermission', 'CommandFilter',
-    'CommandFilterRule', 'License', 'Setting', 'Account', 'SyncInstanceTask',
-    'Platform', 'ChangeAuthPlan', 'GatherUserTask',
-    'RemoteApp', 'RemoteAppPermission', 'DatabaseApp', 'DatabaseAppPermission',
+    # users
+    'User', 'UserGroup',
+    # acls
+    'LoginACL', 'LoginAssetACL',
+    # assets
+    'Asset', 'Node', 'AdminUser', 'SystemUser', 'Domain', 'Gateway', 'CommandFilterRule',
+    'CommandFilter', 'Platform',
+    # applications
+    'Application',
+    # orgs
+    'Organization',
+    # settings
+    'Setting',
+    # perms
+    'AssetPermission', 'ApplicationPermission',
+    # xpack
+    'License', 'Account', 'SyncInstanceTask', 'ChangeAuthPlan', 'GatherUserTask',
 )
 
 
-LOGIN_BACKEND = {
-    'PublicKeyAuthBackend': _('SSH Key'),
-    'RadiusBackend': User.Source.radius.label,
-    'RadiusRealmBackend': User.Source.radius.label,
-    'LDAPAuthorizationBackend': User.Source.ldap.label,
-    'ModelBackend': _('Password'),
-    'SSOAuthentication': _('SSO'),
-    'CASBackend': User.Source.cas.label,
-    'OIDCAuthCodeBackend': User.Source.openid.label,
-    'OIDCAuthPasswordBackend': User.Source.openid.label,
-}
+class AuthBackendLabelMapping(LazyObject):
+    @staticmethod
+    def get_login_backends():
+        backend_label_mapping = {}
+        for source, backends in User.SOURCE_BACKEND_MAPPING.items():
+            for backend in backends:
+                backend_label_mapping[backend] = source.label
+        backend_label_mapping[settings.AUTH_BACKEND_PUBKEY] = _('SSH Key')
+        backend_label_mapping[settings.AUTH_BACKEND_MODEL] = _('Password')
+        backend_label_mapping[settings.AUTH_BACKEND_SSO] = _('SSO')
+        backend_label_mapping[settings.AUTH_BACKEND_AUTH_TOKEN] = _('Auth Token')
+        backend_label_mapping[settings.AUTH_BACKEND_WECOM] = _('WeCom')
+        backend_label_mapping[settings.AUTH_BACKEND_DINGTALK] = _('DingTalk')
+        return backend_label_mapping
+
+    def _setup(self):
+        self._wrapped = self.get_login_backends()
+
+
+AUTH_BACKEND_LABEL_MAPPING = AuthBackendLabelMapping()
 
 
 def create_operate_log(action, sender, resource):
@@ -70,6 +92,7 @@ def create_operate_log(action, sender, resource):
 
 @receiver(post_save)
 def on_object_created_or_update(sender, instance=None, created=False, update_fields=None, **kwargs):
+    # last_login 改变是最后登录日期, 每次登录都会改变
     if instance._meta.object_name == 'User' and \
             update_fields and 'last_login' in update_fields:
         return
@@ -125,28 +148,29 @@ def on_audits_log_create(sender, instance=None, **kwargs):
 
 
 def get_login_backend(request):
-    backend = request.session.get(BACKEND_SESSION_KEY, '')
-    backend = backend.rsplit('.', maxsplit=1)[-1]
-    if backend in LOGIN_BACKEND:
-        return LOGIN_BACKEND[backend]
-    else:
-        logger.warn(f'LOGIN_BACKEND_NOT_FOUND: {backend}')
-        return ''
+    backend = request.session.get('auth_backend', '') or \
+              request.session.get(BACKEND_SESSION_KEY, '')
+
+    backend_label = AUTH_BACKEND_LABEL_MAPPING.get(backend, None)
+    if backend_label is None:
+        backend_label = ''
+    return backend_label
 
 
-def generate_data(username, request):
+def generate_data(username, request, login_type=None):
     user_agent = request.META.get('HTTP_USER_AGENT', '')
     login_ip = get_request_ip(request) or '0.0.0.0'
-    if isinstance(request, Request):
-        login_type = request.META.get('HTTP_X_JMS_LOGIN_TYPE', '')
-    else:
+
+    if login_type is None and isinstance(request, Request):
+        login_type = request.META.get('HTTP_X_JMS_LOGIN_TYPE', 'U')
+    if login_type is None:
         login_type = 'W'
 
     data = {
         'username': username,
         'ip': login_ip,
         'type': login_type,
-        'user_agent': user_agent,
+        'user_agent': user_agent[0:254],
         'datetime': timezone.now(),
         'backend': get_login_backend(request)
     }
@@ -154,9 +178,9 @@ def generate_data(username, request):
 
 
 @receiver(post_auth_success)
-def on_user_auth_success(sender, user, request, **kwargs):
+def on_user_auth_success(sender, user, request, login_type=None, **kwargs):
     logger.debug('User login success: {}'.format(user.username))
-    data = generate_data(user.username, request)
+    data = generate_data(user.username, request, login_type=login_type)
     data.update({'mfa': int(user.mfa_enabled), 'status': True})
     write_login_log(**data)
 

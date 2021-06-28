@@ -2,7 +2,7 @@
 #
 from django.templatetags.static import static
 from django.conf import settings
-from django.utils.translation import gettext_lazy as _
+from django.utils.translation import ugettext as _
 
 
 def jumpserver_processor(request):
@@ -13,9 +13,12 @@ def jumpserver_processor(request):
         'LOGO_TEXT_URL': static('img/logo_text.png'),
         'LOGIN_IMAGE_URL': static('img/login_image.png'),
         'FAVICON_URL': static('img/facio.ico'),
-        'JMS_TITLE': 'JumpServer',
+        'LOGIN_CAS_LOGO_URL': static('img/login_cas_logo.png'),
+        'LOGIN_WECOM_LOGO_URL': static('img/login_wecom_log.png'),
+        'LOGIN_DINGTALK_LOGO_URL': static('img/login_dingtalk_log.png'),
+        'JMS_TITLE': _('JumpServer Open Source Bastion Host'),
         'VERSION': settings.VERSION,
-        'COPYRIGHT': 'FIT2CLOUD 飞致云' + ' © 2014-2020',
+        'COPYRIGHT': 'FIT2CLOUD 飞致云' + ' © 2014-2021',
         'SECURITY_COMMAND_EXECUTION': settings.SECURITY_COMMAND_EXECUTION,
         'SECURITY_MFA_VERIFY_TTL': settings.SECURITY_MFA_VERIFY_TTL,
         'FORCE_SCRIPT_NAME': settings.FORCE_SCRIPT_NAME,

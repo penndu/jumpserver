@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 #
 import time
-
 from rest_framework import permissions
-from django.contrib.auth.mixins import UserPassesTestMixin
 from django.conf import settings
+from common.exceptions import MFAVerifyRequired
 
 from orgs.utils import current_org
 
@@ -96,26 +95,17 @@ class WithBootstrapToken(permissions.BasePermission):
         return settings.BOOTSTRAP_TOKEN == request_bootstrap_token
 
 
-class PermissionsMixin(UserPassesTestMixin):
-    permission_classes = []
-
-    def get_permissions(self):
-        return self.permission_classes
-
-    def test_func(self):
-        permission_classes = self.get_permissions()
-        for permission_class in permission_classes:
-            if not permission_class().has_permission(self.request, self):
-                return False
-        return True
+class UserCanAnyPermCurrentOrg(permissions.BasePermission):
+    def has_permission(self, request, view):
+        return current_org.can_any_by(request.user)
 
 
-class UserCanUpdatePassword:
+class UserCanUpdatePassword(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.can_update_password()
 
 
-class UserCanUpdateSSHKey:
+class UserCanUpdateSSHKey(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.can_update_ssh_key()
 
@@ -125,7 +115,7 @@ class NeedMFAVerify(permissions.BasePermission):
         mfa_verify_time = request.session.get('MFA_VERIFY_TIME', 0)
         if time.time() - mfa_verify_time < settings.SECURITY_MFA_VERIFY_TTL:
             return True
-        return False
+        raise MFAVerifyRequired()
 
 
 class CanUpdateDeleteUser(permissions.BasePermission):
@@ -188,3 +178,12 @@ class IsObjectOwner(IsValidUser):
     def has_object_permission(self, request, view, obj):
         return (super().has_object_permission(request, view, obj) and
                 request.user == getattr(obj, 'user', None))
+
+
+class HasQueryParamsUserAndIsCurrentOrgMember(permissions.BasePermission):
+    def has_permission(self, request, view):
+        query_user_id = request.query_params.get('user')
+        if not query_user_id:
+            return False
+        query_user = current_org.get_members().filter(id=query_user_id).first()
+        return bool(query_user)

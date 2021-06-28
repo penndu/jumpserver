@@ -19,9 +19,10 @@ __all__ = [
 class RelationMixin:
     def get_queryset(self):
         queryset = self.model.objects.all()
-        org_id = current_org.org_id()
-        if org_id is not None:
+        if not current_org.is_root():
+            org_id = current_org.org_id()
             queryset = queryset.filter(systemuser__org_id=org_id)
+
         queryset = queryset.annotate(systemuser_display=Concat(
             F('systemuser__name'), Value('('), F('systemuser__username'),
             Value(')')
@@ -65,7 +66,7 @@ class SystemUserAssetRelationViewSet(BaseRelationViewSet):
     serializer_class = serializers.SystemUserAssetRelationSerializer
     model = models.SystemUser.assets.through
     permission_classes = (IsOrgAdmin,)
-    filter_fields = [
+    filterset_fields = [
         'id', 'asset', 'systemuser',
     ]
     search_fields = [
@@ -91,7 +92,7 @@ class SystemUserNodeRelationViewSet(BaseRelationViewSet):
     serializer_class = serializers.SystemUserNodeRelationSerializer
     model = models.SystemUser.nodes.through
     permission_classes = (IsOrgAdmin,)
-    filter_fields = [
+    filterset_fields = [
         'id', 'node', 'systemuser',
     ]
     search_fields = [
@@ -112,7 +113,7 @@ class SystemUserUserRelationViewSet(BaseRelationViewSet):
     serializer_class = serializers.SystemUserUserRelationSerializer
     model = models.SystemUser.users.through
     permission_classes = (IsOrgAdmin,)
-    filter_fields = [
+    filterset_fields = [
         'id', 'user', 'systemuser',
     ]
     search_fields = [

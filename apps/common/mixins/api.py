@@ -6,19 +6,28 @@ from threading import Thread
 from collections import defaultdict
 from itertools import chain
 
+from django.conf import settings
 from django.db.models.signals import m2m_changed
 from django.core.cache import cache
 from django.http import JsonResponse
+from django.utils.translation import ugettext as _
+from django.contrib.auth import get_user_model
 from rest_framework.response import Response
 from rest_framework.settings import api_settings
+from rest_framework.decorators import action
+from rest_framework.request import Request
 
+from common.const.http import POST
 from common.drf.filters import IDSpmFilter, CustomFilter, IDInFilter
 from ..utils import lazyproperty
 
 __all__ = [
     'JSONResponseMixin', 'CommonApiMixin', 'AsyncApiMixin', 'RelationMixin',
-    'SerializerMixin2', 'QuerySetMixin', 'ExtraFilterFieldsMixin'
+    'SerializerMixin2', 'QuerySetMixin', 'ExtraFilterFieldsMixin', 'RenderToJsonMixin',
 ]
+
+
+UserModel = get_user_model()
 
 
 class JSONResponseMixin(object):
@@ -28,19 +37,57 @@ class JSONResponseMixin(object):
         return JsonResponse(context)
 
 
+# SerializerMixin
+# ----------------------
+
+
+class RenderToJsonMixin:
+    @action(methods=[POST], detail=False, url_path='render-to-json')
+    def render_to_json(self, request: Request):
+        data = {
+            'title': (),
+            'data': request.data,
+        }
+
+        jms_context = getattr(request, 'jms_context', {})
+        column_title_field_pairs = jms_context.get('column_title_field_pairs', ())
+        data['title'] = column_title_field_pairs
+
+        if isinstance(request.data, (list, tuple)) and not any(request.data):
+            error = _("Request file format may be wrong")
+            return Response(data={"error": error}, status=400)
+        return Response(data=data)
+
+
 class SerializerMixin:
-    def get_serializer_class(self):
+    """ 根据用户请求动作的不同，获取不同的 `serializer_class `"""
+
+    serializer_classes = None
+
+    def get_serializer_class_by_view_action(self):
+        if not hasattr(self, 'serializer_classes'):
+            return None
+        if not isinstance(self.serializer_classes, dict):
+            return None
+        action = self.request.query_params.get('action')
+
         serializer_class = None
-        if hasattr(self, 'serializer_classes') and isinstance(self.serializer_classes, dict):
-            if self.action in ['list', 'metadata'] and self.request.query_params.get('draw'):
-                serializer_class = self.serializer_classes.get('display')
-            if serializer_class is None:
-                serializer_class = self.serializer_classes.get(
-                    self.action, self.serializer_classes.get('default')
-                )
-        if serializer_class:
-            return serializer_class
-        return super().get_serializer_class()
+        if action:
+            # metadata方法 使用 action 参数获取
+            serializer_class = self.serializer_classes.get(action)
+        if serializer_class is None:
+            serializer_class = self.serializer_classes.get(self.action)
+        if serializer_class is None:
+            serializer_class = self.serializer_classes.get('display')
+        if serializer_class is None:
+            serializer_class = self.serializer_classes.get('default')
+        return serializer_class
+
+    def get_serializer_class(self):
+        serializer_class = self.get_serializer_class_by_view_action()
+        if serializer_class is None:
+            serializer_class = super().get_serializer_class()
+        return serializer_class
 
 
 class ExtraFilterFieldsMixin:
@@ -78,7 +125,7 @@ class PaginatedResponseMixin:
         return Response(serializer.data)
 
 
-class CommonApiMixin(SerializerMixin, ExtraFilterFieldsMixin):
+class CommonApiMixin(SerializerMixin, ExtraFilterFieldsMixin, RenderToJsonMixin):
     pass
 
 
@@ -290,3 +337,21 @@ class AllowBulkDestoryMixin:
         """
         query = str(filtered.query)
         return '`id` IN (' in query or '`id` =' in query
+
+
+class RoleAdminMixin:
+    kwargs: dict
+    user_id_url_kwarg = 'pk'
+
+    @lazyproperty
+    def user(self):
+        user_id = self.kwargs.get(self.user_id_url_kwarg)
+        return UserModel.objects.get(id=user_id)
+
+
+class RoleUserMixin:
+    request: Request
+
+    @lazyproperty
+    def user(self):
+        return self.request.user

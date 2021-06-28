@@ -60,6 +60,10 @@ class CallbackMixin:
         self.results_raw[t][host][task_name] = task_result
         self.clean_result(t, host, task_name, task_result)
 
+    def close(self):
+        if hasattr(self._display, 'close'):
+            self._display.close()
+
 
 class AdHocResultCallback(CallbackMixin, CallbackModule, CMDCallBackModule):
     """
@@ -124,6 +128,9 @@ class AdHocResultCallback(CallbackMixin, CallbackModule, CMDCallBackModule):
         self.results_summary['success'] = False
         self.gather_result("unreachable", result)
         super().v2_runner_on_unreachable(result)
+
+    def v2_runner_on_start(self, *args, **kwargs):
+        pass
 
     def display_skipped_hosts(self):
         pass
@@ -196,6 +203,9 @@ class CommandResultCallback(AdHocResultCallback):
             result._host.get_name(),
             msg,
         ), color=C.COLOR_ERROR)
+
+    def v2_playbook_on_stats(self, stats):
+        pass
 
     def _print_task_banner(self, task):
         pass
